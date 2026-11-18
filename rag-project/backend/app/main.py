@@ -2,9 +2,11 @@
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 import httpx
 
 from app.config import Settings
@@ -53,6 +55,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="학교 규정 RAG 챗봇", lifespan=lifespan)
+
+project_dir = Path(__file__).resolve().parents[2]
+static_dir = project_dir / "static"
+if not static_dir.is_dir():
+    static_dir = project_dir / "frontend" / "dist"
+
+assets_dir = static_dir / "assets"
+if assets_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    index_file = static_dir / "index.html"
+    if not index_file.is_file():
+        raise HTTPException(status_code=404, detail="프런트엔드 빌드가 없습니다.")
+    return FileResponse(index_file)
 
 
 @app.get("/api/health")
