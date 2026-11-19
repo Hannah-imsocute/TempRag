@@ -12,6 +12,8 @@ from pypdf import PdfReader
 if TYPE_CHECKING:
     from app.services.weaviate_service import WeaviateService
 
+EMBEDDING_BATCH_SIZE = 4
+
 
 def read_pdf_chunks(file: BinaryIO) -> list[tuple[int, str]]:
     reader = PdfReader(file)
@@ -50,7 +52,13 @@ class RagService:
         self.settings = settings
 
     async def index_pdf(self, name: str, chunks: list[tuple[int, str]]) -> None:
-        embedded = [(page, text, await self.ollama.embed(text)) for page, text in chunks]
+        embedded = []
+        for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
+            batch = chunks[start:start + EMBEDDING_BATCH_SIZE]
+            vectors = await self.ollama.embed_many([text for _, text in batch])
+            embedded.extend(
+                (page, text, vector) for (page, text), vector in zip(batch, vectors, strict=True)
+            )
         await self.weaviate.store_pdf(name, embedded)
 
     async def stream(self, question: str) -> AsyncIterator[tuple[str, dict]]:

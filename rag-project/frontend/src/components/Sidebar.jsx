@@ -5,6 +5,7 @@ export default function Sidebar({ open, onClose, onNewChat }) {
   const [files, setFiles] = useState([]);
   const [busy, setBusy] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -25,15 +26,18 @@ export default function Sidebar({ open, onClose, onNewChat }) {
     const body = new FormData();
     body.append('file', file);
     setUploading(true);
+    setUploaded('');
     setError('');
     try {
       const response = await fetch('/api/pdfs', { method: 'POST', body });
-      const result = await response.json();
+      const result = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(result.detail || 'PDF 업로드에 실패했습니다.');
+        setError(typeof result?.detail === 'string' ? result.detail : `PDF 업로드에 실패했습니다 (HTTP ${response.status}).`);
         return;
       }
+      if (typeof result !== 'string') throw new Error('Invalid upload response');
       setFiles((previous) => [...previous.filter((name) => name !== result), result].sort());
+      setUploaded(result);
     } catch {
       setError('PDF 업로드에 실패했습니다.');
     } finally {
@@ -59,7 +63,8 @@ export default function Sidebar({ open, onClose, onNewChat }) {
         <section className="sidebar-section">
           <label htmlFor="pdf-upload">PDF 업로드</label>
           <input id="pdf-upload" type="file" accept=".pdf,application/pdf" disabled={busy || uploading} onChange={uploadPdf} />
-          {uploading && <p role="status">PDF를 임베딩하고 있습니다…</p>}
+          {uploading && <p role="status">PDF를 색인하고 있습니다…</p>}
+          {uploaded && <p role="status">{uploaded} 색인이 완료되었습니다.</p>}
           {error && <p role="alert">{error}</p>}
           <div className="section-title">업로드된 PDF</div>
           <ul className="pdf-list">

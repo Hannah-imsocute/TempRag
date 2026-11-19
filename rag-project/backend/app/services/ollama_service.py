@@ -5,22 +5,37 @@ from collections.abc import AsyncIterator
 import httpx
 
 
+class EmbeddingError(RuntimeError):
+    pass
+
+
 class OllamaService:
     def __init__(self, http: httpx.AsyncClient, embedding_model: str, llm_model: str):
         self.http = http
         self.embedding_model = embedding_model
         self.llm_model = llm_model
 
-    async def embed(self, question: str) -> list[float]:
-        # /api/embed 응답의 embeddings는 2차원 배열이며, 질문 한 개의 첫 번째 벡터를 사용합니다.
-        response = await self.http.post(
-            "/api/embed", json={"model": self.embedding_model, "input": question}
-        )
-        response.raise_for_status()
-        embeddings = response.json().get("embeddings", [])
-        if not embeddings or not embeddings[0]:
-            raise RuntimeError("Ollama 임베딩 결과가 비어 있습니다.")
-        return embeddings[0]
+    async def embed(self, text: str) -> list[float]:
+        return (await self.embed_many([text]))[0]
+
+    async def embed_many(self, texts: list[str]) -> list[list[float]]:
+        try:
+            response = await self.http.post(
+                "/api/embed", json={"model": self.embedding_model, "input": texts, "truncate": False}
+            )
+            if response.status_code == 404:
+                raise EmbeddingError(f"Ollama에 임베딩 모델 {self.embedding_model}이 준비되어 있지 않습니다.")
+            response.raise_for_status()
+            result = response.json()
+        except (httpx.HTTPError, ValueError) as error:
+            raise EmbeddingError("Ollama 임베딩 요청에 실패했습니다. 서버 상태와 모델을 확인해 주세요.") from error
+
+        vectors = result.get("embeddings") if isinstance(result, dict) else None
+        if not isinstance(vectors, list) or len(vectors) != len(texts) or any(
+            not isinstance(vector, list) or not vector for vector in vectors
+        ):
+            raise EmbeddingError("Ollama가 요청한 청크에 맞는 임베딩을 반환하지 않았습니다.")
+        return vectors
 
     async def stream_answer(self, question: str, context: str) -> AsyncIterator[str]:
         messages = [

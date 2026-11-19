@@ -13,6 +13,7 @@ from weaviate.classes.query import Filter, MetadataQuery
 from weaviate.exceptions import UnexpectedStatusCodeError
 
 logger = logging.getLogger(__name__)
+WRITE_BATCH_SIZE = 64
 
 
 def first_nonempty(properties: dict[str, Any], *keys: str) -> Any:
@@ -74,9 +75,10 @@ class WeaviateService:
             for object_id, (page, text, vector) in zip(ids, chunks)
         ]
         try:
-            result = await collection.data.insert_many(objects)
-            if result.has_errors:
-                raise RuntimeError(f"Weaviate PDF insert failed for {len(result.errors)} chunks")
+            for start in range(0, len(objects), WRITE_BATCH_SIZE):
+                result = await collection.data.insert_many(objects[start:start + WRITE_BATCH_SIZE])
+                if result.has_errors:
+                    raise RuntimeError(f"Weaviate PDF insert failed for {len(result.errors)} chunks")
         except (Exception, asyncio.CancelledError):
             try:
                 deleted = await collection.data.delete_many(Filter.by_id().contains_any(ids))

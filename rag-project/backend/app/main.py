@@ -17,7 +17,7 @@ from pypdf.errors import PyPdfError
 from app.config import Settings
 from app.schemas import ChatRequest
 from app.sse import encode_sse
-from app.services.ollama_service import OllamaService
+from app.services.ollama_service import EmbeddingError, OllamaService
 from app.services.rag_service import RagService, read_pdf_chunks
 
 logger = logging.getLogger(__name__)
@@ -142,16 +142,22 @@ async def upload_pdf(file: UploadFile, request: Request) -> str:
         await run_in_threadpool(save_pdf, file.file, path)
     except FileExistsError:
         raise HTTPException(status_code=409, detail="같은 이름의 PDF가 이미 있습니다.") from None
+    except OSError as error:
+        logger.exception("PDF 원본 저장 실패")
+        raise HTTPException(status_code=500, detail="PDF 원본을 저장할 수 없습니다.") from error
     indexed = False
     try:
         await request.app.state.rag.index_pdf(name, chunks)
         indexed = True
+    except EmbeddingError as error:
+        logger.warning("PDF 임베딩 실패: %s", error, exc_info=error.__cause__ is not None)
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except Exception as error:
-        logger.exception("PDF 색인 실패")
-        raise HTTPException(status_code=502, detail="PDF 임베딩 또는 저장에 실패했습니다.") from error
+        logger.exception("Weaviate PDF 저장 실패")
+        raise HTTPException(status_code=502, detail="Weaviate에 PDF 벡터를 저장하지 못했습니다.") from error
     finally:
         if not indexed:
-            path.unlink()
+            path.unlink(missing_ok=True)
     return name
 
 
