@@ -1,26 +1,18 @@
-"""API는 HTTP/SSE 입출력만 담당하고, 실제 RAG 처리는 서비스에 위임합니다."""
-import asyncio
 from contextlib import asynccontextmanager
-import logging
 from pathlib import Path
-import shutil
-from tempfile import NamedTemporaryFile
-from typing import BinaryIO
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, StreamingResponse
+import asyncpg
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
-from pypdf.errors import PyPdfError
 
 from app.config import Settings
-from app.schemas import ChatRequest
-from app.sse import encode_sse
-from app.services.ollama_service import EmbeddingError, OllamaService
-from app.services.rag_service import RagService, read_pdf_chunks
+from app import auth, chats, documents
+from app.database import initialize
+from app.services.ollama_service import OllamaService
+from app.services.rag_service import RagService
 
-logger = logging.getLogger(__name__)
 settings = Settings()
 
 
@@ -34,10 +26,18 @@ async def lifespan(app: FastAPI):
     from app.services.weaviate_service import WeaviateService
 
     # 요청마다 클라이언트를 재연결하지 않고 애플리케이션 수명 동안 재사용합니다.
-    async with httpx.AsyncClient(
+    async with asyncpg.create_pool(
+        host=settings.postgres_host, port=settings.postgres_port, user=settings.postgres_user,
+        password=settings.postgres_password, database=settings.postgres_db, min_size=1, max_size=20, command_timeout=15,
+    ) as pool, httpx.AsyncClient(
         base_url=settings.ollama_base_url.rstrip("/"),
         timeout=httpx.Timeout(240.0, connect=10.0),
     ) as ollama_http:
+        await initialize(pool)
+        await auth.bootstrap_admin(pool, settings)
+        app.state.db = pool
+        app.state.settings = settings
+        app.state.uploads_dir = uploads_dir
         weaviate_client = weaviate.use_async_with_custom(
             http_host=settings.weaviate_http_host,
             http_port=settings.weaviate_http_port,
@@ -60,13 +60,14 @@ async def lifespan(app: FastAPI):
                 except UnexpectedStatusCodeError as error:
                     if error.status_code != 422 or not await collections.exists(settings.weaviate_collection):
                         raise
-            documents = WeaviateService(
+            vector_store = WeaviateService(
                 weaviate_client, settings.weaviate_collection, settings.weaviate_text_property
             )
-            await documents.ensure_pdf_properties()
+            await vector_store.ensure_pdf_properties()
+            await documents.import_existing_files(pool, uploads_dir, settings.weaviate_collection)
             app.state.rag = RagService(
                 ollama=OllamaService(ollama_http, settings.embedding_model, settings.llm_model),
-                weaviate=documents,
+                weaviate=vector_store,
                 settings=settings,
             )
             yield
@@ -75,6 +76,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="학교 규정 RAG 챗봇", lifespan=lifespan)
+app.include_router(auth.router)
+app.include_router(chats.router)
+app.include_router(documents.router)
+
+
+@app.middleware("http")
+async def protect_api(request: Request, call_next):
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and request.headers.get("sec-fetch-site") in {"cross-site", "same-site"}:
+        return JSONResponse({"detail": "같은 사이트에서 요청해 주세요."}, status_code=403)
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 project_dir = Path(__file__).resolve().parents[2]
 uploads_dir = project_dir / "uploads"
@@ -99,94 +114,3 @@ def index():
 async def health():
     # 이 API는 FastAPI 프로세스 응답 여부만 확인합니다(외부 AI 서비스의 상태 검사는 아님).
     return {"status": "ok"}
-
-
-@app.get("/api/pdfs")
-def list_pdfs() -> list[str]:
-    if not uploads_dir.is_dir():
-        return []
-    return sorted(
-        file.name for file in uploads_dir.iterdir()
-        if file.is_file() and file.suffix.lower() == ".pdf"
-    )
-
-
-def save_pdf(source: BinaryIO, path: Path) -> None:
-    path.parent.mkdir(exist_ok=True)
-    source.seek(0)
-    with NamedTemporaryFile(dir=path.parent) as temporary:
-        shutil.copyfileobj(source, temporary)
-        temporary.flush()
-        path.hardlink_to(temporary.name)
-
-
-@app.post("/api/pdfs", status_code=201)
-async def upload_pdf(file: UploadFile, request: Request) -> str:
-    name = file.filename or ""
-    if Path(name).suffix.lower() != ".pdf" or any(c in name for c in ("/", "\\", "\x00")):
-        raise HTTPException(status_code=400, detail="PDF 파일을 선택해 주세요.")
-    if len(name.encode("utf-8")) > 255:
-        raise HTTPException(status_code=400, detail="파일 이름이 너무 깁니다.")
-    if await file.read(5) != b"%PDF-":
-        raise HTTPException(status_code=400, detail="유효한 PDF 파일이 아닙니다.")
-    await file.seek(0)
-    try:
-        chunks = await run_in_threadpool(read_pdf_chunks, file.file)
-    except (PyPdfError, ValueError) as error:
-        raise HTTPException(status_code=400, detail="PDF를 읽을 수 없습니다.") from error
-    if not chunks:
-        raise HTTPException(status_code=422, detail="PDF에서 추출할 텍스트가 없습니다.")
-
-    path = uploads_dir / name
-    try:
-        await run_in_threadpool(save_pdf, file.file, path)
-    except FileExistsError:
-        raise HTTPException(status_code=409, detail="같은 이름의 PDF가 이미 있습니다.") from None
-    except OSError as error:
-        logger.exception("PDF 원본 저장 실패")
-        raise HTTPException(status_code=500, detail="PDF 원본을 저장할 수 없습니다.") from error
-    indexed = False
-    try:
-        await request.app.state.rag.index_pdf(name, chunks)
-        indexed = True
-    except EmbeddingError as error:
-        logger.warning("PDF 임베딩 실패: %s", error, exc_info=error.__cause__ is not None)
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except Exception as error:
-        logger.exception("Weaviate PDF 저장 실패")
-        raise HTTPException(status_code=502, detail="Weaviate에 PDF 벡터를 저장하지 못했습니다.") from error
-    finally:
-        if not indexed:
-            path.unlink(missing_ok=True)
-    return name
-
-
-@app.post("/api/chat/stream")
-async def stream_chat(body: ChatRequest, request: Request):
-    question = body.question.strip()
-
-    async def events():
-        try:
-            if not question:
-                yield encode_sse("error", {"message": "질문을 입력해 주세요."})
-                return
-            async for event_name, data in request.app.state.rag.stream(question):
-                if await request.is_disconnected():
-                    return
-                yield encode_sse(event_name, data)
-        except asyncio.CancelledError:
-            raise  # 프런트에서 생성 중단 시 불필요한 작업을 계속하지 않음
-        except Exception:
-            logger.exception("RAG 스트리밍 처리 실패")
-            # 서버 주소나 내부 환경 변수 등 민감한 오류 메시지를 브라우저에 노출하지 않습니다.
-            yield encode_sse("error", {"message": "답변 생성에 실패했습니다. 서버 로그를 확인해 주세요."})
-
-    return StreamingResponse(
-        events(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",  # Nginx가 청크를 모아서 보내지 않게 함
-            "Connection": "keep-alive",
-        },
-    )

@@ -1,11 +1,11 @@
 import { createSseParser } from './sse';
 
 /** POST 요청의 본문은 JSON, 응답은 SSE. GET만 기본 지원하는 EventSource 대신 fetch 사용. */
-export async function streamChat(question, callbacks, signal) {
+export async function streamChat(conversationId, question, callbacks, signal) {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ conversation_id: conversationId, question }),
     signal,
   });
 

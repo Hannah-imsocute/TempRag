@@ -1,9 +1,7 @@
 """Weaviate에 문서 벡터를 저장하고 질문과 유사한 문서 텍스트를 읽습니다."""
-import asyncio
 import json
-import logging
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.schemas import RetrievedChunk
 from weaviate import WeaviateAsyncClient
@@ -12,7 +10,6 @@ from weaviate.classes.data import DataObject
 from weaviate.classes.query import Filter, MetadataQuery
 from weaviate.exceptions import UnexpectedStatusCodeError
 
-logger = logging.getLogger(__name__)
 WRITE_BATCH_SIZE = 64
 
 
@@ -53,6 +50,7 @@ class WeaviateService:
             (self.text_property, DataType.TEXT),
             ("pdfFileName", DataType.TEXT),
             ("pdfPageNumber", DataType.INT),
+            ("pdfDocumentId", DataType.UUID),
         ):
             if name not in existing:
                 try:
@@ -63,30 +61,51 @@ class WeaviateService:
                     ):
                         raise
 
-    async def store_pdf(self, name: str, chunks: list[tuple[int, str, list[float]]]) -> None:
+    async def store_pdf(self, document_id: UUID, name: str, chunks: list[tuple[int, str, list[float]]]) -> None:
         collection = self.client.collections.use(self.collection)
-        ids = [uuid4() for _ in chunks]
-        objects = [
-            DataObject(
-                uuid=object_id,
-                properties={self.text_property: text, "pdfFileName": name, "pdfPageNumber": page},
-                vector=vector,
-            )
-            for object_id, (page, text, vector) in zip(ids, chunks)
+        for start in range(0, len(chunks), WRITE_BATCH_SIZE):
+            objects = [
+                DataObject(
+                    uuid=uuid4(),
+                    properties={
+                        self.text_property: text, "pdfFileName": name,
+                        "pdfPageNumber": page, "pdfDocumentId": document_id,
+                    },
+                    vector=vector,
+                )
+                for page, text, vector in chunks[start:start + WRITE_BATCH_SIZE]
+            ]
+            result = await collection.data.insert_many(objects)
+            if result.has_errors:
+                raise RuntimeError(f"Weaviate PDF insert failed for {len(result.errors)} chunks")
+
+    async def delete_pdf(self, document_id: UUID, name: str, collection_name: str, legacy: bool) -> None:
+        if not await self.client.collections.exists(collection_name):
+            return
+        collection = self.client.collections.use(collection_name)
+        if not legacy:
+            await self.delete_vectors(collection, Filter.by_property("pdfDocumentId").equal(document_id))
+            return
+        # Older vectors have a filename but no document ID. Compare the entire name,
+        # since the existing text property's tokenization may match other filenames.
+        properties = {prop.name for prop in (await collection.config.get()).properties}
+        if "pdfFileName" not in properties:
+            return
+        ids = [
+            obj.uuid async for obj in collection.iterator(return_properties=list(properties & {"pdfFileName", "pdfDocumentId"}))
+            if obj.properties.get("pdfFileName") == name and not obj.properties.get("pdfDocumentId")
         ]
-        try:
-            for start in range(0, len(objects), WRITE_BATCH_SIZE):
-                result = await collection.data.insert_many(objects[start:start + WRITE_BATCH_SIZE])
-                if result.has_errors:
-                    raise RuntimeError(f"Weaviate PDF insert failed for {len(result.errors)} chunks")
-        except (Exception, asyncio.CancelledError):
-            try:
-                deleted = await collection.data.delete_many(Filter.by_id().contains_any(ids))
-                if deleted.failed:
-                    logger.error("PDF 색인 정리 실패 (%s개)", deleted.failed)
-            except Exception:
-                logger.exception("PDF 색인 정리 실패")
-            raise
+        for start in range(0, len(ids), WRITE_BATCH_SIZE):
+            await self.delete_vectors(collection, Filter.by_id().contains_any(ids[start:start + WRITE_BATCH_SIZE]))
+
+    @staticmethod
+    async def delete_vectors(collection, where) -> None:
+        while True:
+            result = await collection.data.delete_many(where)
+            if result.failed or (result.matches and not result.successful):
+                raise RuntimeError("Weaviate PDF vector deletion failed")
+            if result.matches == result.successful:
+                return
 
     async def search(self, vector: list[float], limit: int) -> list[RetrievedChunk]:
         collection = self.client.collections.use(self.collection)
@@ -117,6 +136,8 @@ class WeaviateService:
                     title=str(title),
                     page=str(page) if page is not None else None,
                     distance=round(float(distance), 4) if distance is not None else None,
+                    document_id=UUID(str(props["pdfDocumentId"])) if props.get("pdfDocumentId") else None,
+                    pdf_filename=props.get("pdfFileName"),
                 )
             )
         return found

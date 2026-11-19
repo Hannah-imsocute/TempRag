@@ -1,6 +1,7 @@
 """질문 -> 임베딩 -> 유사도 검색 -> 문맥 구성 -> LLM 스트리밍 순서를 조립합니다."""
 from __future__ import annotations
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from uuid import UUID
 
 from app.config import Settings
 from app.services.ollama_service import OllamaService
@@ -51,7 +52,7 @@ class RagService:
         self.weaviate = weaviate
         self.settings = settings
 
-    async def index_pdf(self, name: str, chunks: list[tuple[int, str]]) -> None:
+    async def index_pdf(self, document_id: UUID, name: str, chunks: list[tuple[int, str]]) -> None:
         embedded = []
         for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
             batch = chunks[start:start + EMBEDDING_BATCH_SIZE]
@@ -59,15 +60,20 @@ class RagService:
             embedded.extend(
                 (page, text, vector) for (page, text), vector in zip(batch, vectors, strict=True)
             )
-        await self.weaviate.store_pdf(name, embedded)
+        await self.weaviate.store_pdf(document_id, name, embedded)
 
-    async def stream(self, question: str) -> AsyncIterator[tuple[str, dict]]:
+    async def stream(
+        self, question: str, history: list[dict[str, str]],
+        visible_chunks: Callable[[list[RetrievedChunk]], Awaitable[list[RetrievedChunk]]],
+    ) -> AsyncIterator[tuple[str, dict]]:
         # status: 검색 전 대기 상태에서도 사용자가 작업 진행을 알 수 있습니다.
         yield "status", {"message": "질문을 임베딩하고 있습니다..."}
         vector = await self.ollama.embed(question)
 
         yield "status", {"message": "학교 규정을 검색하고 있습니다..."}
-        chunks = await self.weaviate.search(vector, self.settings.search_top_k)
+        limit = self.settings.search_top_k
+        candidates = await self.weaviate.search(vector, limit * 3)
+        chunks = (await visible_chunks(candidates))[:limit]
         sources = [
             {"index": index, "title": chunk.title, "page": chunk.page, "distance": chunk.distance}
             for index, chunk in enumerate(chunks, start=1)
@@ -82,7 +88,7 @@ class RagService:
         yield "status", {"message": "검색된 규정으로 답변을 작성하고 있습니다..."}
         context = build_context(chunks, self.settings.max_context_chars)
         generated = False
-        async for text in self.ollama.stream_answer(question, context):
+        async for text in self.ollama.stream_answer(question, context, history):
             generated = True
             yield "delta", {"text": text}
         if not generated:

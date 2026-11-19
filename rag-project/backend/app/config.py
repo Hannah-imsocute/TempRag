@@ -9,6 +9,14 @@ def env(name: str, default: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
+    postgres_host: str = field(default_factory=lambda: env("POSTGRES_HOST", "postgre"))
+    postgres_port: int = field(default_factory=lambda: int(env("POSTGRES_PORT", "5432")))
+    postgres_user: str = field(default_factory=lambda: env("POSTGRES_USER", "admin"))
+    postgres_password: str = field(default_factory=lambda: env("POSTGRES_PASSWORD", ""))
+    postgres_db: str = field(default_factory=lambda: env("POSTGRES_DB", "rag"))
+    admin_username: str = field(default_factory=lambda: env("ADMIN_USERNAME", "admin"))
+    admin_password: str = field(default_factory=lambda: env("ADMIN_PASSWORD", ""))
+    cookie_secure: bool = field(default_factory=lambda: env("COOKIE_SECURE", "false").lower() == "true")
     ollama_base_url: str = field(default_factory=lambda: env("OLLAMA_BASE_URL", "http://ollama:11434"))
     embedding_model: str = field(default_factory=lambda: env("EMBEDDING_MODEL", "qwen3-embedding:8b"))
     llm_model: str = field(default_factory=lambda: env("LLM_MODEL", "exaone3.5:7.8b"))

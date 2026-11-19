@@ -18,11 +18,12 @@ export default function MessageList({ messages, status }) {
             {message.role === 'assistant' && <div className="assistant-icon"><BookOpenText size={18} /></div>}
             <div className="message-main">
               <div className={message.role === 'user' ? 'user-bubble' : 'assistant-answer'}>
-                {message.role === 'user' ? (
+                {message.interrupted && <p className="muted">답변 생성이 중단되었습니다.</p>}
+              {message.role === 'user' ? (
                   <span>{message.content}</span>
                 ) : message.content ? (
                   <div className="markdown-content"><ReactMarkdown>{message.content}</ReactMarkdown></div>
-                ) : (
+                ) : message.interrupted ? null : (
                   <span className="typing-indicator" aria-label="답변 생성 중"><span /></span>
                 )}
               </div>

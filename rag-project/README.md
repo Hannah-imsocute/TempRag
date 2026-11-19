@@ -1,59 +1,30 @@
-# RAG Project — React + FastAPI
+# 학교 규정 GPT
 
-- React + Vite + TypeScript: UI
-- FastAPI: 백엔드 API, React 정적 파일 서비스
-- 기존 Ollama, Weaviate Docker 컨테이너 재사용 (새로 생성하지 않음)
+## Docker 실행
 
-## 사전 조건
-
-기존 Docker 네트워크 `db-connect`가 있어야 하고, `ollama`와 `weaviate`라는 이름(또는 네트워크 별칭)으로 접근할 수 있어야 합니다.
+기존 `ollama`, `weaviate`, `postgre` 컨테이너와 같은 외부 `db-connect` 네트워크에서 `rag-app`을 실행합니다. PostgreSQL은 `postgre:5432`의 `rag` 데이터베이스에 `admin`으로 접속합니다. 이 프로젝트의 Compose는 기존 서비스 컨테이너를 재사용합니다.
 
 ```bash
-docker network ls
 docker network inspect db-connect
-```
-
-실행 중인 기존 컨테이너가 네트워크에 없다면 (컨테이너 이름이 실제로 일치하는지 확인):
-
-```bash
-docker network connect db-connect ollama
-docker network connect db-connect weaviate
-```
-
-PDF 색인과 벡터 검색에 사용할 모델을 Ollama에 준비합니다.
-
-```bash
-docker exec ollama ollama pull qwen3-embedding:8b
 docker exec ollama ollama list
 ```
 
-기존 벡터가 있는 컬렉션에는 그 벡터를 생성한 모델과 같은 모델을 사용합니다. Compose에서 모델이나 컬렉션을 지정할 때는 `EMBEDDING_MODEL`과 `WEAVIATE_COLLECTION`을 설정합니다.
+`rag-project/.env`를 만들고 `POSTGRES_PASSWORD`에 기존 PostgreSQL 비밀번호를 지정합니다. 첫 시작 시 웹 관리자 계정을 만들려면 `ADMIN_PASSWORD`에 별도의 8자 이상 비밀번호를 넣습니다. 웹 관리자의 아이디는 `ADMIN_USERNAME`으로 지정할 수 있으며 기본값은 `admin`입니다. 계정이 생성되면 `ADMIN_PASSWORD`는 환경에서 제거해도 됩니다. 기존 웹 관리자 비밀번호는 시작할 때 덮어쓰지 않습니다. 공개 HTTPS 배포에서는 `COOKIE_SECURE=true`로 설정합니다.
 
-## 시작
+기본 모델은 임베딩에 `qwen3-embedding:8b`, 답변 생성에 `exaone3.5:7.8b`를 사용합니다. Ollama에 두 모델을 준비한 뒤 시작합니다.
 
 ```bash
+docker exec ollama ollama pull qwen3-embedding:8b
+docker exec ollama ollama pull exaone3.5:7.8b
 docker compose up -d --build
-docker compose ps
-docker compose logs -f rag-app
 ```
 
-- 웹 UI: http://localhost:8000/
-- API 상태: http://localhost:8000/api/health
-- Swagger: http://localhost:8000/docs
+접속 포트는 `8000`입니다. `EMBEDDING_MODEL`, `LLM_MODEL`, `WEAVIATE_COLLECTION`(기본값 `Test`)을 설정으로 변경할 수 있습니다. 컬렉션에는 같은 임베딩 모델의 벡터를 사용합니다.
 
-호스트/서버 밖에서 접속할 때는 localhost 대신 서버 IP를 사용합니다. EC2라면 보안 그룹 인바운드 규칙도 확인하세요.
+## 계정, 대화, 자료
 
-## 개발
-
-- `frontend/src/App.tsx`: React 화면
-- `backend/main.py`: FastAPI 엔드포인트
-- `backend/requirements.txt`: Python 패키지
-- `compose.yaml`: 외부 컨테이너 연결 환경 변수
-
-이 Compose 구성은 배포형 통합 이미지입니다. 코드를 수정하면 `docker compose up -d --build`로 반영하세요. Git 커밋은 호스트 프로젝트 폴더에서 수행합니다.
-
-`/api/health`는 **FastAPI 상태만** 확인합니다. Ollama/Weaviate 연결을 실제로 검사하지는 않습니다.
-
-사이드바에서 PDF를 업로드하면 페이지별로 텍스트를 추출해 겹치는 청크로 나눕니다. 질문 검색과 같은 Ollama 모델로 각 청크를 임베딩하고 파일명, 페이지, 텍스트와 함께 Weaviate에 저장한 뒤 업로드 완료를 표시합니다. 컬렉션이 없으면 서버 시작 시 생성합니다. 원본과 목록은 `uploads/`를 사용합니다. 추출할 텍스트가 없는 스캔본은 업로드할 수 없습니다.
-
-프론트엔드의 `package-lock.json`은 포함하지 않았습니다. 최초 Docker 빌드에서는 `npm install`이 실행됩니다. 로컬에서 `cd frontend && npm install` 후 생성된 lock 파일을 Git에 커밋하면 이후 Docker 빌드는 `npm ci`를 사용합니다.
+- 일반 계정은 로그인 화면에서 회원가입합니다. 토글 사이드바에서 새 채팅을 시작하거나 본인의 대화 기록을 다시 엽니다.
+- 관리자는 사이드바의 **자료 관리** 화면에서 검색·정렬 및 삭제를 할 수 있습니다. 여러 PDF를 한 번에 선택하면 파일별로 색인하고 결과를 표시합니다. 텍스트가 없는 스캔 PDF는 OCR을 적용한 뒤 업로드합니다.
+- PostgreSQL이 비어 있으면 서버 시작 시 `users`, `login_sessions`, `conversations`, `messages`, `pdf_documents`를 생성합니다. 로그인 쿠키에는 임의의 세션 토큰을 사용하며 PostgreSQL에는 토큰 해시를 저장합니다. 대화 메시지에는 저장된 출처 및 답변 중단 상태가 포함됩니다.
+- 원본은 `uploads/`에, 이름·등록일·상태 등 문서 정보는 PostgreSQL에 저장합니다. PDF별 ID를 Weaviate의 청크 벡터에 기록하므로 자료를 삭제하면 해당 벡터와 원본도 삭제됩니다. 삭제가 중단되면 자료 관리에서 다시 시도할 수 있습니다.
+- 이전 버전의 `uploads/` PDF는 시작 시 목록에 등록합니다. 삭제 시 기존 Weaviate 벡터의 `pdfFileName`과 정확히 일치하는 벡터도 제거합니다. 이전에 파일만 저장한 문서를 색인하려면 해당 문서를 삭제한 뒤 다시 업로드합니다.

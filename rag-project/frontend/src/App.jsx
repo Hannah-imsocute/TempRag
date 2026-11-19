@@ -1,14 +1,12 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { BookOpen, GraduationCap, Menu } from 'lucide-react';
+import AuthForm from './components/AuthForm';
 import Sidebar from './components/Sidebar';
 import Composer from './components/Composer';
+import Documents from './components/Documents';
 import MessageList from './components/MessageList';
 import { streamChat } from './api/chat';
-
-// 현재 단계에서는 DB가 없으므로 이 ID는 React 화면 목록용으로만 사용합니다.
-function makeId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
+import { requestJson } from './api/request';
 
 const EXAMPLES = [
   '졸업에 필요한 학점은 몇 학점인가요?',
@@ -17,97 +15,197 @@ const EXAMPLES = [
 ];
 
 export default function App() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [user, setUser] = useState(undefined);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    requestJson('/api/auth/me', { signal: controller.signal })
+      .then(setUser)
+      .catch((problem) => {
+        if (!controller.signal.aborted) {
+          if (problem.status !== 401) setError(problem.message);
+          setUser(null);
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  if (user === undefined) return <main className="auth-page" role="status">로그인 상태를 확인하는 중입니다.</main>;
+  if (!user) return <>{error && <p className="app-alert form-error" role="alert">{error}</p>}<AuthForm onLogin={(account) => { setError(''); setUser(account); }} /></>;
+  return <Workspace user={user} onLogout={() => setUser(null)} />;
+}
+
+function Workspace({ user, onLogout }) {
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 700);
+  const [view, setView] = useState('chat');
   const [draft, setDraft] = useState('');
   const [messages, setMessages] = useState([]);
+  const [conversations, setConversations] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
   const controllerRef = useRef(null);
+  const selectionRef = useRef(null);
 
-  function newChat() {
-    // 이전 HTTP 스트림이 늦게 응답하더라도 새 채팅 화면을 변경하지 못하도록 중단합니다.
-    controllerRef.current?.abort();
-    controllerRef.current = null;
-    setMessages([]);
-    setDraft('');
-    setStatus('');
-    setIsStreaming(false);
+  function refreshHistory(signal) {
+    return requestJson('/api/chat/conversations', { signal }).then(setConversations).catch((problem) => {
+      if (!signal?.aborted) setError(problem.message);
+    });
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    refreshHistory(controller.signal);
+    return () => {
+      controller.abort();
+      controllerRef.current?.abort();
+      selectionRef.current?.abort();
+    };
+  }, []);
+
+  function closeOnMobile() {
     if (window.innerWidth < 700) setSidebarOpen(false);
   }
 
-  function stopGeneration() {
+  function resetChat() {
     controllerRef.current?.abort();
+    controllerRef.current = null;
+    selectionRef.current?.abort();
+    selectionRef.current = null;
+    setMessages([]);
+    setSelectedId(null);
+    setDraft('');
+    setStatus('');
+    setError('');
+    setLoading(false);
+    setIsStreaming(false);
   }
 
-  async function sendQuestion(text) {
-    const question = text.trim();
-    if (!question || isStreaming) return;
-    const answerId = makeId();
+  function newChat() {
+    resetChat();
+    setView('chat');
+    closeOnMobile();
+  }
+
+  async function selectConversation(id) {
+    if (id === selectedId && view === 'chat') return closeOnMobile();
+    resetChat();
+    setView('chat');
+    closeOnMobile();
+    setLoading(true);
     const controller = new AbortController();
-    controllerRef.current = controller;
-    setDraft('');
-    setIsStreaming(true);
-    setStatus('질문을 보내고 있습니다...');
-    setMessages((prev) => [
-      ...prev,
-      { id: makeId(), role: 'user', content: question },
-      { id: answerId, role: 'assistant', content: '', sources: [] },
-    ]);
-
-    const updateAnswer = (update) => {
-      if (controllerRef.current !== controller) return;
-      setMessages((prev) => prev.map((m) => (m.id === answerId ? { ...m, ...update(m) } : m)));
-    };
-
+    selectionRef.current = controller;
     try {
-      await streamChat(question, {
-        onStatus(message) {
-          if (controllerRef.current === controller) setStatus(message);
-        },
-        onSources(items) {
-          updateAnswer(() => ({ sources: items }));
-        },
-        onDelta(textChunk) {
-          updateAnswer((m) => ({ content: m.content + textChunk }));
-        },
-      }, controller.signal);
-    } catch (error) {
-      if (controllerRef.current !== controller) return;
-      const message = error.name === 'AbortError'
-        ? '\n\n*(답변 생성이 중단되었습니다.)*'
-        : `\n\n⚠️ ${error.message}`;
-      updateAnswer((m) => ({ content: m.content + message }));
+      const conversation = await requestJson(`/api/chat/conversations/${id}`, { signal: controller.signal });
+      if (selectionRef.current === controller) {
+        setMessages(conversation.messages);
+        setSelectedId(id);
+      }
+    } catch (problem) {
+      if (!controller.signal.aborted) setError(problem.message);
     } finally {
-      if (controllerRef.current === controller) {
-        controllerRef.current = null;
-        setIsStreaming(false);
-        setStatus('');
+      if (selectionRef.current === controller) {
+        selectionRef.current = null;
+        setLoading(false);
       }
     }
   }
 
-  const isWelcome = messages.length === 0;
+  async function logout() {
+    try {
+      await requestJson('/api/auth/logout', { method: 'POST' });
+      onLogout();
+    } catch (problem) {
+      setError(problem.message);
+    }
+  }
+
+  async function sendQuestion(text) {
+    const question = text.trim();
+    if (!question || controllerRef.current || loading) return;
+    const controller = new AbortController();
+    const answerId = `answer-${Date.now()}`;
+    controllerRef.current = controller;
+    setError('');
+    setIsStreaming(true);
+    setStatus('질문을 보내고 있습니다...');
+    const current = () => controllerRef.current === controller;
+    const updateAnswer = (update) => {
+      if (current()) setMessages((previous) => previous.map((message) =>
+        message.id === answerId ? { ...message, ...update(message) } : message));
+    };
+    let chatId = selectedId;
+    try {
+      if (!chatId) {
+        const chat = await requestJson('/api/chat/conversations', { method: 'POST', signal: controller.signal });
+        if (!current()) return;
+        chatId = chat.id;
+        setSelectedId(chatId);
+      }
+      setDraft('');
+      setMessages((previous) => [
+        ...previous,
+        { id: `question-${answerId}`, role: 'user', content: question },
+        { id: answerId, role: 'assistant', content: '', sources: [] },
+      ]);
+      await streamChat(chatId, question, {
+        onStatus(message) {
+          if (current()) setStatus(message);
+        },
+        onSources(items) {
+          updateAnswer(() => ({ sources: items }));
+        },
+        onDelta(chunk) {
+          updateAnswer((message) => ({ content: message.content + chunk }));
+        },
+      }, controller.signal);
+    } catch (problem) {
+      if (current() && problem.name === 'AbortError') {
+        updateAnswer(() => ({ interrupted: true }));
+      } else if (current()) {
+        setError(problem.message);
+        setMessages((previous) => previous.filter((message) => message.id !== answerId || message.content));
+      }
+    } finally {
+      if (current()) {
+        controllerRef.current = null;
+        setIsStreaming(false);
+        setStatus('');
+      }
+      if (chatId) refreshHistory();
+    }
+  }
+
+  const composer = <Composer value={draft} onChange={setDraft} onSubmit={sendQuestion} isStreaming={isStreaming} onStop={() => controllerRef.current?.abort()} />;
 
   return (
     <div className="app-shell">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} onNewChat={newChat} />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} onNewChat={newChat}
+        onSelect={selectConversation} conversations={conversations} selectedId={selectedId} user={user}
+        onDocuments={() => { setView('documents'); closeOnMobile(); }} view={view} onLogout={logout} />
       <main className="main-panel">
         <header className="topbar">
           <div className="topbar-left">
             {!sidebarOpen && <button className="icon-button" onClick={() => setSidebarOpen(true)} aria-label="사이드바 열기"><Menu size={21} /></button>}
-            <div className="model-title">학교 규정 GPT <span className="model-tag">RAG</span></div>
+            <span className="model-title">{view === 'documents' ? '관리자' : '학교 규정 GPT'}</span>
           </div>
-          <div className="topbar-right"><BookOpen size={19} /><span>학칙 기반 답변</span></div>
+          {view === 'chat' && <div className="topbar-right"><BookOpen size={19} /><span>학칙 기반 답변</span></div>}
         </header>
-        {isWelcome ? (
+        {error && <p className="app-alert form-error" role="alert">{error}</p>}
+        {view === 'documents' ? <Documents /> : loading ? (
+          <p className="app-alert muted" role="status">대화를 불러오는 중입니다.</p>
+        ) : messages.length === 0 ? (
           <div className="welcome-area">
             <div className="welcome-content">
               <div className="welcome-symbol"><GraduationCap size={29} strokeWidth={1.6} /></div>
               <h1>학교 규정에 대해 무엇이든 물어보세요</h1>
               <p>학교 규정 문서를 검색해 근거와 함께 답변합니다.</p>
-              <Composer value={draft} onChange={setDraft} onSubmit={sendQuestion} isStreaming={isStreaming} onStop={stopGeneration} />
+              {composer}
               <div className="example-list">
-                {EXAMPLES.map((question) => <button className="example-button" onClick={() => sendQuestion(question)} key={question}>{question}</button>)}
+                {EXAMPLES.map((question) => <button className="example-button" disabled={isStreaming} onClick={() => sendQuestion(question)} key={question}>{question}</button>)}
               </div>
             </div>
           </div>
@@ -116,8 +214,8 @@ export default function App() {
             <MessageList messages={messages} status={status} />
             <div className="bottom-composer">
               <div className="composer-width">
-                <Composer value={draft} onChange={setDraft} onSubmit={sendQuestion} isStreaming={isStreaming} onStop={stopGeneration} />
-                <div className="disclaimer">AI 답변은 참고용입니다. 중요한 학사 결정은 학교 공지와 담당 부서에 다시 확인하세요.</div>
+                {composer}
+                <div className="disclaimer">중요한 학사 결정은 학교 공지와 담당 부서에서 확인하세요.</div>
               </div>
             </div>
           </>

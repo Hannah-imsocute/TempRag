@@ -37,7 +37,7 @@ class OllamaService:
             raise EmbeddingError("Ollama가 요청한 청크에 맞는 임베딩을 반환하지 않았습니다.")
         return vectors
 
-    async def stream_answer(self, question: str, context: str) -> AsyncIterator[str]:
+    async def stream_answer(self, question: str, context: str, history: list[dict[str, str]]) -> AsyncIterator[str]:
         messages = [
             {
                 "role": "system",
@@ -48,6 +48,7 @@ class OllamaService:
                     "가능하다면 사용한 자료의 번호를 [1]처럼 표시하세요. 한국어로 답하세요."
                 ),
             },
+            *history,
             {
                 "role": "user",
                 "content": f"<참고자료>\n{context}\n</참고자료>\n\n<질문>\n{question}\n</질문>",
@@ -61,6 +62,7 @@ class OllamaService:
                 "model": self.llm_model,
                 "messages": messages,
                 "stream": True,
+                "think": False,
                 "options": {"temperature": 0.2},
             },
         ) as response:
