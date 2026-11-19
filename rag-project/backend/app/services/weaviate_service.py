@@ -38,7 +38,6 @@ class WeaviateService:
         self.text_property = text_property
 
     async def search(self, vector: list[float], limit: int) -> list[RetrievedChunk]:
-        # collections.use()는 기존 컬렉션에 접근만 합니다. 새 컬렉션이나 데이터를 만들지 않습니다.
         collection = self.client.collections.use(self.collection)
         response = await collection.query.near_vector(
             near_vector=vector,

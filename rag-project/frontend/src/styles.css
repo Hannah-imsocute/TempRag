@@ -32,6 +32,8 @@ button:disabled { cursor: default; opacity: .45; }
 }
 .sidebar-header, .composer-bottom { justify-content: space-between; }
 .sidebar-actions { display: grid; gap: 6px; }
+#pdf-upload { display: block; width: 100%; margin: 6px 0 12px; }
+.pdf-list { overflow-wrap: anywhere; padding-inline-start: 20px; }
 .sidebar-action, .icon-button, .example-button {
   padding: 8px 10px;
   color: inherit;

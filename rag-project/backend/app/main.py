@@ -3,8 +3,10 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+import shutil
+from tempfile import NamedTemporaryFile
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
@@ -23,7 +25,9 @@ settings = Settings()
 async def lifespan(app: FastAPI):
     # 외부 DB 드라이버는 서버가 시작할 때 로딩됩니다. API 테스트에서는 실제 DB 연결이 필요 없습니다.
     import weaviate
+    from weaviate.classes.config import Configure, DataType, Property
     from weaviate.classes.init import AdditionalConfig, Timeout
+    from weaviate.exceptions import UnexpectedStatusCodeError
     from app.services.weaviate_service import WeaviateService
 
     # 요청마다 클라이언트를 재연결하지 않고 애플리케이션 수명 동안 재사용합니다.
@@ -42,6 +46,17 @@ async def lifespan(app: FastAPI):
         )
         try:
             await weaviate_client.connect()
+            collections = weaviate_client.collections
+            if not await collections.exists(settings.weaviate_collection):
+                try:
+                    await collections.create(
+                        settings.weaviate_collection,
+                        vector_config=Configure.Vectors.self_provided(),
+                        properties=[Property(name=settings.weaviate_text_property, data_type=DataType.TEXT)],
+                    )
+                except UnexpectedStatusCodeError as error:
+                    if error.status_code != 422 or not await collections.exists(settings.weaviate_collection):
+                        raise
             app.state.rag = RagService(
                 ollama=OllamaService(ollama_http, settings.embedding_model, settings.llm_model),
                 weaviate=WeaviateService(
@@ -57,6 +72,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="학교 규정 RAG 챗봇", lifespan=lifespan)
 
 project_dir = Path(__file__).resolve().parents[2]
+uploads_dir = project_dir / "uploads"
 static_dir = project_dir / "static"
 if not static_dir.is_dir():
     static_dir = project_dir / "frontend" / "dist"
@@ -78,6 +94,37 @@ def index():
 async def health():
     # 이 API는 FastAPI 프로세스 응답 여부만 확인합니다(외부 AI 서비스의 상태 검사는 아님).
     return {"status": "ok"}
+
+
+@app.get("/api/pdfs")
+def list_pdfs() -> list[str]:
+    if not uploads_dir.is_dir():
+        return []
+    return sorted(
+        file.name for file in uploads_dir.iterdir()
+        if file.is_file() and file.suffix.lower() == ".pdf"
+    )
+
+
+@app.post("/api/pdfs", status_code=201)
+def upload_pdf(file: UploadFile) -> str:
+    name = file.filename or ""
+    if Path(name).suffix.lower() != ".pdf" or any(c in name for c in ("/", "\\", "\x00")):
+        raise HTTPException(status_code=400, detail="PDF 파일을 선택해 주세요.")
+    if len(name.encode("utf-8")) > 255:
+        raise HTTPException(status_code=400, detail="파일 이름이 너무 깁니다.")
+    if file.file.read(5) != b"%PDF-":
+        raise HTTPException(status_code=400, detail="유효한 PDF 파일이 아닙니다.")
+    file.file.seek(0)
+    uploads_dir.mkdir(exist_ok=True)
+    with NamedTemporaryFile(dir=uploads_dir) as temporary:
+        shutil.copyfileobj(file.file, temporary)
+        temporary.flush()
+        try:
+            (uploads_dir / name).hardlink_to(temporary.name)
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail="같은 이름의 PDF가 이미 있습니다.") from None
+    return name
 
 
 @app.post("/api/chat/stream")

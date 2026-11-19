@@ -45,6 +45,6 @@ docker compose logs -f rag-app
 
 `/api/health`는 **FastAPI 상태만** 확인합니다. Ollama/Weaviate 연결을 실제로 검사하지는 않습니다.
 
-RAG 로직과 PDF 업로드/질문 API는 아직 구현하지 않은 최소 뼈대입니다.
+사이드바에서 PDF를 업로드하고 저장된 파일 목록을 확인할 수 있습니다. 파일은 `uploads/`에 저장됩니다. 서버 시작 시 `WEAVIATE_COLLECTION`(기본값 `Test`)이 없으면 생성합니다. 업로드된 PDF를 RAG 검색에 사용하려면 별도로 텍스트를 추출하고 벡터를 등록해야 합니다.
 
 프론트엔드의 `package-lock.json`은 포함하지 않았습니다. 최초 Docker 빌드에서는 `npm install`이 실행됩니다. 로컬에서 `cd frontend && npm install` 후 생성된 lock 파일을 Git에 커밋하면 이후 Docker 빌드는 `npm ci`를 사용합니다.
