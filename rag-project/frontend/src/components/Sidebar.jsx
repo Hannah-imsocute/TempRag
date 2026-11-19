@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 export default function Sidebar({ open, onClose, onNewChat }) {
   const [files, setFiles] = useState([]);
   const [busy, setBusy] = useState(true);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -23,7 +24,7 @@ export default function Sidebar({ open, onClose, onNewChat }) {
     if (!file) return;
     const body = new FormData();
     body.append('file', file);
-    setBusy(true);
+    setUploading(true);
     setError('');
     try {
       const response = await fetch('/api/pdfs', { method: 'POST', body });
@@ -37,7 +38,7 @@ export default function Sidebar({ open, onClose, onNewChat }) {
       setError('PDF 업로드에 실패했습니다.');
     } finally {
       input.value = '';
-      setBusy(false);
+      setUploading(false);
     }
   }
 
@@ -57,7 +58,8 @@ export default function Sidebar({ open, onClose, onNewChat }) {
         </div>
         <section className="sidebar-section">
           <label htmlFor="pdf-upload">PDF 업로드</label>
-          <input id="pdf-upload" type="file" accept=".pdf,application/pdf" disabled={busy} onChange={uploadPdf} />
+          <input id="pdf-upload" type="file" accept=".pdf,application/pdf" disabled={busy || uploading} onChange={uploadPdf} />
+          {uploading && <p role="status">PDF를 임베딩하고 있습니다…</p>}
           {error && <p role="alert">{error}</p>}
           <div className="section-title">업로드된 PDF</div>
           <ul className="pdf-list">

@@ -5,17 +5,20 @@ import logging
 from pathlib import Path
 import shutil
 from tempfile import NamedTemporaryFile
+from typing import BinaryIO
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
+from pypdf.errors import PyPdfError
 
 from app.config import Settings
 from app.schemas import ChatRequest
 from app.sse import encode_sse
 from app.services.ollama_service import OllamaService
-from app.services.rag_service import RagService
+from app.services.rag_service import RagService, read_pdf_chunks
 
 logger = logging.getLogger(__name__)
 settings = Settings()
@@ -57,11 +60,13 @@ async def lifespan(app: FastAPI):
                 except UnexpectedStatusCodeError as error:
                     if error.status_code != 422 or not await collections.exists(settings.weaviate_collection):
                         raise
+            documents = WeaviateService(
+                weaviate_client, settings.weaviate_collection, settings.weaviate_text_property
+            )
+            await documents.ensure_pdf_properties()
             app.state.rag = RagService(
                 ollama=OllamaService(ollama_http, settings.embedding_model, settings.llm_model),
-                weaviate=WeaviateService(
-                    weaviate_client, settings.weaviate_collection, settings.weaviate_text_property
-                ),
+                weaviate=documents,
                 settings=settings,
             )
             yield
@@ -106,24 +111,47 @@ def list_pdfs() -> list[str]:
     )
 
 
+def save_pdf(source: BinaryIO, path: Path) -> None:
+    path.parent.mkdir(exist_ok=True)
+    source.seek(0)
+    with NamedTemporaryFile(dir=path.parent) as temporary:
+        shutil.copyfileobj(source, temporary)
+        temporary.flush()
+        path.hardlink_to(temporary.name)
+
+
 @app.post("/api/pdfs", status_code=201)
-def upload_pdf(file: UploadFile) -> str:
+async def upload_pdf(file: UploadFile, request: Request) -> str:
     name = file.filename or ""
     if Path(name).suffix.lower() != ".pdf" or any(c in name for c in ("/", "\\", "\x00")):
         raise HTTPException(status_code=400, detail="PDF 파일을 선택해 주세요.")
     if len(name.encode("utf-8")) > 255:
         raise HTTPException(status_code=400, detail="파일 이름이 너무 깁니다.")
-    if file.file.read(5) != b"%PDF-":
+    if await file.read(5) != b"%PDF-":
         raise HTTPException(status_code=400, detail="유효한 PDF 파일이 아닙니다.")
-    file.file.seek(0)
-    uploads_dir.mkdir(exist_ok=True)
-    with NamedTemporaryFile(dir=uploads_dir) as temporary:
-        shutil.copyfileobj(file.file, temporary)
-        temporary.flush()
-        try:
-            (uploads_dir / name).hardlink_to(temporary.name)
-        except FileExistsError:
-            raise HTTPException(status_code=409, detail="같은 이름의 PDF가 이미 있습니다.") from None
+    await file.seek(0)
+    try:
+        chunks = await run_in_threadpool(read_pdf_chunks, file.file)
+    except (PyPdfError, ValueError) as error:
+        raise HTTPException(status_code=400, detail="PDF를 읽을 수 없습니다.") from error
+    if not chunks:
+        raise HTTPException(status_code=422, detail="PDF에서 추출할 텍스트가 없습니다.")
+
+    path = uploads_dir / name
+    try:
+        await run_in_threadpool(save_pdf, file.file, path)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="같은 이름의 PDF가 이미 있습니다.") from None
+    indexed = False
+    try:
+        await request.app.state.rag.index_pdf(name, chunks)
+        indexed = True
+    except Exception as error:
+        logger.exception("PDF 색인 실패")
+        raise HTTPException(status_code=502, detail="PDF 임베딩 또는 저장에 실패했습니다.") from error
+    finally:
+        if not indexed:
+            path.unlink()
     return name
 
 

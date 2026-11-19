@@ -1,10 +1,18 @@
-"""기존 Weaviate 컬렉션에서 사용자 질문과 유사한 문서 텍스트를 읽습니다."""
+"""Weaviate에 문서 벡터를 저장하고 질문과 유사한 문서 텍스트를 읽습니다."""
+import asyncio
 import json
+import logging
 from typing import Any
+from uuid import uuid4
 
 from app.schemas import RetrievedChunk
 from weaviate import WeaviateAsyncClient
-from weaviate.classes.query import MetadataQuery
+from weaviate.classes.config import DataType, Property
+from weaviate.classes.data import DataObject
+from weaviate.classes.query import Filter, MetadataQuery
+from weaviate.exceptions import UnexpectedStatusCodeError
+
+logger = logging.getLogger(__name__)
 
 
 def first_nonempty(properties: dict[str, Any], *keys: str) -> Any:
@@ -37,6 +45,47 @@ class WeaviateService:
         self.collection = collection
         self.text_property = text_property
 
+    async def ensure_pdf_properties(self) -> None:
+        config = self.client.collections.use(self.collection).config
+        existing = {prop.name for prop in (await config.get()).properties}
+        for name, data_type in (
+            (self.text_property, DataType.TEXT),
+            ("pdfFileName", DataType.TEXT),
+            ("pdfPageNumber", DataType.INT),
+        ):
+            if name not in existing:
+                try:
+                    await config.add_property(Property(name=name, data_type=data_type))
+                except UnexpectedStatusCodeError as error:
+                    if error.status_code != 422 or not any(
+                        prop.name == name for prop in (await config.get()).properties
+                    ):
+                        raise
+
+    async def store_pdf(self, name: str, chunks: list[tuple[int, str, list[float]]]) -> None:
+        collection = self.client.collections.use(self.collection)
+        ids = [uuid4() for _ in chunks]
+        objects = [
+            DataObject(
+                uuid=object_id,
+                properties={self.text_property: text, "pdfFileName": name, "pdfPageNumber": page},
+                vector=vector,
+            )
+            for object_id, (page, text, vector) in zip(ids, chunks)
+        ]
+        try:
+            result = await collection.data.insert_many(objects)
+            if result.has_errors:
+                raise RuntimeError(f"Weaviate PDF insert failed for {len(result.errors)} chunks")
+        except (Exception, asyncio.CancelledError):
+            try:
+                deleted = await collection.data.delete_many(Filter.by_id().contains_any(ids))
+                if deleted.failed:
+                    logger.error("PDF 색인 정리 실패 (%s개)", deleted.failed)
+            except Exception:
+                logger.exception("PDF 색인 정리 실패")
+            raise
+
     async def search(self, vector: list[float], limit: int) -> list[RetrievedChunk]:
         collection = self.client.collections.use(self.collection)
         response = await collection.query.near_vector(
@@ -52,11 +101,11 @@ class WeaviateService:
                 continue
             metadata = props.get("metadata") if isinstance(props.get("metadata"), dict) else {}
             title = (
-                first_nonempty(props, "file_name", "filename", "document_name", "source", "title")
+                first_nonempty(props, "pdfFileName", "file_name", "filename", "document_name", "source", "title")
                 or first_nonempty(metadata, "file_name", "filename", "document_name", "source", "title")
                 or "학교 규정 문서"
             )
-            page = first_nonempty(props, "page_label", "page", "page_number") or first_nonempty(
+            page = first_nonempty(props, "pdfPageNumber", "page_label", "page", "page_number") or first_nonempty(
                 metadata, "page_label", "page", "page_number"
             )
             distance = obj.metadata.distance if obj.metadata else None

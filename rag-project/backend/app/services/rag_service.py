@@ -5,10 +5,26 @@ from collections.abc import AsyncIterator
 from app.config import Settings
 from app.services.ollama_service import OllamaService
 from app.schemas import RetrievedChunk
-from typing import TYPE_CHECKING
+from typing import BinaryIO, TYPE_CHECKING
+
+from pypdf import PdfReader
 
 if TYPE_CHECKING:
     from app.services.weaviate_service import WeaviateService
+
+
+def read_pdf_chunks(file: BinaryIO) -> list[tuple[int, str]]:
+    reader = PdfReader(file)
+    if reader.is_encrypted:
+        raise ValueError("Encrypted PDF")
+    chunks = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = " ".join((page.extract_text() or "").split())
+        for start in range(0, len(text), 850):
+            chunks.append((page_number, text[start:start + 1000]))
+            if start + 1000 >= len(text):
+                break
+    return chunks
 
 
 def build_context(chunks: list[RetrievedChunk], max_chars: int) -> str:
@@ -32,6 +48,10 @@ class RagService:
         self.ollama = ollama
         self.weaviate = weaviate
         self.settings = settings
+
+    async def index_pdf(self, name: str, chunks: list[tuple[int, str]]) -> None:
+        embedded = [(page, text, await self.ollama.embed(text)) for page, text in chunks]
+        await self.weaviate.store_pdf(name, embedded)
 
     async def stream(self, question: str) -> AsyncIterator[tuple[str, dict]]:
         # status: 검색 전 대기 상태에서도 사용자가 작업 진행을 알 수 있습니다.
