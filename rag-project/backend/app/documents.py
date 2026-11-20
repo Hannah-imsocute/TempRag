@@ -22,6 +22,7 @@ FIELDS = "id, filename, size_bytes, uploaded_at, status, chunk_count"
 ORDER = {"newest": "uploaded_at DESC", "oldest": "uploaded_at ASC", "name": "lower(filename), filename", "size": "size_bytes DESC"}
 
 
+# 기존 업로드 파일을 PostgreSQL 문서 목록에 등록합니다.
 async def import_existing_files(pool, directory: Path, collection: str) -> None:
     if not directory.is_dir():
         return
@@ -34,6 +35,7 @@ async def import_existing_files(pool, directory: Path, collection: str) -> None:
             )
 
 
+# PDF 원본을 업로드 폴더에 저장합니다.
 def save_pdf(source: BinaryIO, path: Path) -> None:
     path.parent.mkdir(exist_ok=True)
     source.seek(0)
@@ -43,12 +45,14 @@ def save_pdf(source: BinaryIO, path: Path) -> None:
         path.hardlink_to(temporary.name)
 
 
+# 문서의 벡터, 원본 파일, 메타데이터를 정리합니다.
 async def remove_document(connection, rag, path: Path, document) -> None:
     await rag.weaviate.delete_pdf(document["id"], document["filename"], document["collection"], document["legacy"])
     path.unlink(missing_ok=True)
     await connection.execute("DELETE FROM pdf_documents WHERE id=$1", document["id"])
 
 
+# 파일명 검색과 정렬을 적용한 PDF 목록을 반환합니다.
 @router.get("")
 async def list_pdfs(
     request: Request, admin: Admin, q: str = Query(default="", max_length=255),
@@ -60,6 +64,7 @@ async def list_pdfs(
     )
 
 
+# 관리자 PDF를 검증하고 원본 및 벡터를 저장합니다.
 @router.post("", status_code=201)
 async def upload_pdf(file: UploadFile, request: Request, admin: Admin):
     name = file.filename or ""
@@ -121,6 +126,7 @@ async def upload_pdf(file: UploadFile, request: Request, admin: Admin):
             raise HTTPException(502, "PDF 저장에 실패했습니다. 자료 목록을 확인해 주세요.") from error
 
 
+# 선택한 PDF와 연결된 벡터를 삭제합니다.
 @router.delete("/{document_id}", status_code=204)
 async def delete_pdf(document_id: UUID, request: Request, admin: Admin):
     state = request.app.state

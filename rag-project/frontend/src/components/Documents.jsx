@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { FileText, Search, Trash2, Upload } from 'lucide-react';
+import { FileText, FileUp, Search, Trash2, Upload } from 'lucide-react';
 import { requestJson } from '../api/request';
 
 const dateFormat = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium' });
 const statusNames = { ready: '등록됨', indexing: '색인 중', deleting: '삭제 진행 중' };
 
+// 파일 크기를 KB 또는 MB로 표시합니다.
 function fileSize(bytes) {
   return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
 }
 
+// PDF 등록과 검색, 정렬, 삭제 화면을 표시합니다.
 export default function Documents() {
   const [files, setFiles] = useState([]);
   const [documents, setDocuments] = useState(null);
@@ -31,6 +33,7 @@ export default function Documents() {
     return () => { clearTimeout(timer); controller.abort(); };
   }, [query, sort, revision]);
 
+  // 선택한 PDF를 순서대로 색인합니다.
   async function upload(event) {
     event.preventDefault();
     if (!files.length || busy) return;
@@ -60,6 +63,7 @@ export default function Documents() {
     }
   }
 
+  // 확인한 PDF를 삭제하고 목록을 갱신합니다.
   async function remove(document) {
     if (!window.confirm(`“${document.filename}”과 검색 벡터를 삭제할까요?`)) return;
     setBusy(true);
@@ -76,18 +80,25 @@ export default function Documents() {
     }
   }
 
+  const selection = files.length === 1 ? files[0].name : files.length ? `${files.length}개 파일 선택` : '선택된 파일 없음';
+
   return (
     <section className="documents-page" aria-labelledby="documents-title">
       <h1 id="documents-title">자료 관리</h1>
       <form className="upload-panel" onSubmit={upload}>
-        <div>
-          <label className="document-label" htmlFor="pdf-upload">PDF 업로드</label>
-          <input ref={input} id="pdf-upload" type="file" accept=".pdf,application/pdf" multiple disabled={busy}
-            onChange={(event) => setFiles(Array.from(event.target.files))} />
+        <div className="upload-mark" aria-hidden="true"><FileUp size={23} strokeWidth={1.75} /></div>
+        <div className="upload-main">
+          <h2 id="pdf-upload-title">PDF 업로드</h2>
+          <div className="file-picker">
+            <input ref={input} id="pdf-upload" className="visually-hidden" type="file" accept=".pdf,application/pdf" multiple disabled={busy}
+              aria-labelledby="pdf-upload-title" onChange={(event) => setFiles(Array.from(event.target.files))} />
+            <label className="file-choice" htmlFor="pdf-upload">파일 선택</label>
+            <span className="file-selection" title={selection}>{selection}</span>
+          </div>
         </div>
         <button className="primary-button" disabled={!files.length || busy}><Upload size={17} />{files.length ? `${files.length}개 업로드` : '업로드'}</button>
       </form>
-      {progress && <p className="muted" role="status">{progress}</p>}
+      {progress && <p className="document-progress" role="status">{progress}</p>}
       {errors.length > 0 && <ul className="form-error" role="alert">{errors.map((error, index) => <li key={index}>{error}</li>)}</ul>}
       <div className="documents-toolbar">
         <h2>등록된 PDF</h2>
@@ -107,16 +118,42 @@ export default function Documents() {
       {documents?.length > 0 && (
         <div className="document-table">
           <table>
-            <thead><tr><th scope="col">파일 이름</th><th scope="col">등록일</th><th scope="col">크기</th><th scope="col">상태</th><th scope="col">관리</th></tr></thead>
-            <tbody>{documents.map((document) => (
-              <tr key={document.id}>
-                <td><span className="document-name"><FileText size={18} />{document.filename}</span></td>
-                <td>{dateFormat.format(new Date(document.uploaded_at))}</td>
-                <td>{fileSize(document.size_bytes)}</td>
-                <td>{statusNames[document.status]}</td>
-                <td><button className="delete-button" disabled={busy} aria-label={`${document.filename} 삭제`} onClick={() => remove(document)}><Trash2 size={16} /> 삭제</button></td>
+            <thead>
+              <tr>
+                <th scope="col">파일 이름</th>
+                <th scope="col" className="document-detail">등록일</th>
+                <th scope="col" className="document-detail">크기</th>
+                <th scope="col">상태</th>
+                <th scope="col">관리</th>
               </tr>
-            ))}</tbody>
+            </thead>
+            <tbody>
+              {documents.map((document) => {
+                const registeredOn = dateFormat.format(new Date(document.uploaded_at));
+                const size = fileSize(document.size_bytes);
+                return (
+                  <tr key={document.id}>
+                    <td>
+                      <span className="document-name">
+                        <FileText size={18} aria-hidden="true" />
+                        <span>
+                          <span>{document.filename}</span>
+                          <span className="document-mobile-meta">{registeredOn} · {size}</span>
+                        </span>
+                      </span>
+                    </td>
+                    <td className="document-detail">{registeredOn}</td>
+                    <td className="document-detail">{size}</td>
+                    <td><span className={`document-status status-${document.status}`}>{statusNames[document.status]}</span></td>
+                    <td>
+                      <button className="delete-button" disabled={busy} aria-label={`${document.filename} 삭제`} onClick={() => remove(document)}>
+                        <Trash2 size={16} /><span>삭제</span>
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
           </table>
         </div>
       )}

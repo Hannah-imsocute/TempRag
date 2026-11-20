@@ -1,4 +1,3 @@
-"""질문 -> 임베딩 -> 유사도 검색 -> 문맥 구성 -> LLM 스트리밍 순서를 조립합니다."""
 from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from uuid import UUID
@@ -16,6 +15,7 @@ if TYPE_CHECKING:
 EMBEDDING_BATCH_SIZE = 4
 
 
+# PDF에서 페이지별 텍스트 청크를 추출합니다.
 def read_pdf_chunks(file: BinaryIO) -> list[tuple[int, str]]:
     reader = PdfReader(file)
     if reader.is_encrypted:
@@ -30,8 +30,8 @@ def read_pdf_chunks(file: BinaryIO) -> list[tuple[int, str]]:
     return chunks
 
 
+# 검색 결과를 길이 제한에 맞춰 답변 근거로 조합합니다.
 def build_context(chunks: list[RetrievedChunk], max_chars: int) -> str:
-    """과도하게 긴 PDF 청크 때문에 LLM 문맥 창을 초과하지 않도록 자릅니다."""
     sections = []
     remaining = max_chars
     for i, chunk in enumerate(chunks, start=1):
@@ -47,11 +47,13 @@ def build_context(chunks: list[RetrievedChunk], max_chars: int) -> str:
 
 
 class RagService:
+    # 임베딩, 벡터 검색, 답변 생성에 필요한 의존성을 보관합니다.
     def __init__(self, ollama: OllamaService, weaviate: WeaviateService, settings: Settings):
         self.ollama = ollama
         self.weaviate = weaviate
         self.settings = settings
 
+    # PDF 청크를 임베딩하고 Weaviate에 저장합니다.
     async def index_pdf(self, document_id: UUID, name: str, chunks: list[tuple[int, str]]) -> None:
         embedded = []
         for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
@@ -62,11 +64,11 @@ class RagService:
             )
         await self.weaviate.store_pdf(document_id, name, embedded)
 
+    # 질문과 관련된 근거를 검색하고 답변 이벤트를 생성합니다.
     async def stream(
         self, question: str, history: list[dict[str, str]],
         visible_chunks: Callable[[list[RetrievedChunk]], Awaitable[list[RetrievedChunk]]],
     ) -> AsyncIterator[tuple[str, dict]]:
-        # status: 검색 전 대기 상태에서도 사용자가 작업 진행을 알 수 있습니다.
         yield "status", {"message": "질문을 임베딩하고 있습니다..."}
         vector = await self.ollama.embed(question)
 

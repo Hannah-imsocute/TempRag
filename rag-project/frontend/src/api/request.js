@@ -1,3 +1,4 @@
+// API 응답을 JSON으로 읽고 HTTP 오류를 처리합니다.
 export async function requestJson(path, options) {
   const response = await fetch(path, options);
   if (response.status === 204) return;
@@ -9,6 +10,7 @@ export async function requestJson(path, options) {
   return data;
 }
 
+// JSON 본문을 담은 POST 요청을 보냅니다.
 export function postJson(path, body, signal) {
   return requestJson(path, {
     method: 'POST',

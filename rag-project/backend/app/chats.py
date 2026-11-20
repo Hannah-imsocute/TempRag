@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/chat")
 logger = logging.getLogger(__name__)
 
 
+# 로그인 사용자가 소유한 대화만 조회합니다.
 async def owned_conversation(db, conversation_id, user_id):
     chat = await db.fetchrow(
         "SELECT id, title, updated_at FROM conversations WHERE id=$1 AND user_id=$2", conversation_id, user_id
@@ -26,6 +27,7 @@ async def owned_conversation(db, conversation_id, user_id):
     return chat
 
 
+# 사용자의 대화 목록을 최신순으로 반환합니다.
 @router.get("/conversations")
 async def conversations(request: Request, user: User):
     return await request.app.state.db.fetch(
@@ -33,6 +35,7 @@ async def conversations(request: Request, user: User):
     )
 
 
+# 사용자에게 속한 새 대화를 생성합니다.
 @router.post("/conversations", status_code=201)
 async def create_conversation(request: Request, user: User):
     return await request.app.state.db.fetchrow(
@@ -40,6 +43,7 @@ async def create_conversation(request: Request, user: User):
     )
 
 
+# 대화의 메시지와 출처를 시간순으로 반환합니다.
 @router.get("/conversations/{conversation_id}")
 async def conversation(conversation_id: UUID, request: Request, user: User):
     db = request.app.state.db
@@ -51,6 +55,7 @@ async def conversation(conversation_id: UUID, request: Request, user: User):
     return {**chat, "messages": [{**message, "sources": json.loads(message["sources"])} for message in messages]}
 
 
+# 질문을 접수하고 규정 기반 답변을 SSE로 반환합니다.
 @router.post("/stream")
 async def stream_chat(body: ChatRequest, request: Request, user: User):
     question = body.question.strip()
@@ -60,6 +65,7 @@ async def stream_chat(body: ChatRequest, request: Request, user: User):
     chat_id = body.conversation_id
     await owned_conversation(state.db, chat_id, user["id"])
 
+    # 질문과 답변을 저장하며 생성 이벤트를 전달합니다.
     async def events():
         try:
             async with operation(state.db, f"chat:{chat_id}") as connection:
@@ -71,7 +77,6 @@ async def stream_chat(body: ChatRequest, request: Request, user: User):
                        WHERE conversation_id=$1 AND NOT interrupted ORDER BY id DESC LIMIT 8""", chat_id,
                 )
                 history = [dict(message) for message in reversed(previous)]
-                # A cancelled turn may leave a user question without an answer.
                 while history and history[0]["role"] != "user":
                     history.pop(0)
                 async with connection.transaction():
@@ -84,6 +89,7 @@ async def stream_chat(body: ChatRequest, request: Request, user: User):
                         chat_id, first, question[:60],
                     )
 
+                # 자료 상태를 확인해 검색 근거로 사용할 청크를 선별합니다.
                 async def visible_chunks(chunks):
                     ids = [chunk.document_id for chunk in chunks if chunk.document_id]
                     names = [chunk.pdf_filename for chunk in chunks if chunk.pdf_filename and not chunk.document_id]

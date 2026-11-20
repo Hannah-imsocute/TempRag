@@ -1,6 +1,6 @@
 import { createSseParser } from './sse';
 
-/** POST 요청의 본문은 JSON, 응답은 SSE. GET만 기본 지원하는 EventSource 대신 fetch 사용. */
+// 질문을 보내고 SSE 응답을 이벤트별로 전달합니다.
 export async function streamChat(conversationId, question, callbacks, signal) {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
@@ -10,19 +10,13 @@ export async function streamChat(conversationId, question, callbacks, signal) {
   });
 
   if (!response.ok) {
-    let detail = `요청 실패 (HTTP ${response.status})`;
-    try {
-      const error = await response.json();
-      if (typeof error.detail === 'string') detail = error.detail;
-    } catch {
-      // HTML/기타 오류 응답일 수도 있으므로 기본 메시지를 사용합니다.
-    }
-    throw new Error(detail);
+    const error = await response.json().catch(() => null);
+    throw new Error(typeof error?.detail === 'string' ? error.detail : `요청 실패 (HTTP ${response.status})`);
   }
   if (!response.body) throw new Error('브라우저가 스트리밍 응답을 지원하지 않습니다.');
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder(); // 한글이 청크 중간에서 잘려도 스트리밍 UTF-8 디코딩
+  const decoder = new TextDecoder();
   let completed = false;
   const parser = createSseParser(({ event, data }) => {
     if (event === 'status') callbacks.onStatus?.(data.message);

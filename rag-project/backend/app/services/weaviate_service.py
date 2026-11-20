@@ -1,4 +1,3 @@
-"""Weaviate에 문서 벡터를 저장하고 질문과 유사한 문서 텍스트를 읽습니다."""
 import json
 from typing import Any
 from uuid import UUID, uuid4
@@ -13,6 +12,7 @@ from weaviate.exceptions import UnexpectedStatusCodeError
 WRITE_BATCH_SIZE = 64
 
 
+# 지정한 키 순서에서 첫 번째 비어 있지 않은 값을 찾습니다.
 def first_nonempty(properties: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         value = properties.get(key)
@@ -21,8 +21,8 @@ def first_nonempty(properties: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+# 현재 또는 기존 문서 구조에서 청크 텍스트를 찾습니다.
 def extract_text(properties: dict[str, Any], text_property: str) -> str:
-    # 일반 PDF 청킹 스키마(text/content 등)와 LlamaIndex의 _node_content를 지원합니다.
     value = first_nonempty(properties, text_property, "text", "content", "page_content", "chunk", "body")
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -38,11 +38,13 @@ def extract_text(properties: dict[str, Any], text_property: str) -> str:
 
 
 class WeaviateService:
+    # Weaviate 연결과 기본 컬렉션 설정을 보관합니다.
     def __init__(self, client: WeaviateAsyncClient, collection: str, text_property: str):
         self.client = client
         self.collection = collection
         self.text_property = text_property
 
+    # PDF 청크 저장에 필요한 컬렉션 속성을 준비합니다.
     async def ensure_pdf_properties(self) -> None:
         config = self.client.collections.use(self.collection).config
         existing = {prop.name for prop in (await config.get()).properties}
@@ -61,6 +63,7 @@ class WeaviateService:
                     ):
                         raise
 
+    # PDF 청크와 임베딩을 Weaviate에 저장합니다.
     async def store_pdf(self, document_id: UUID, name: str, chunks: list[tuple[int, str, list[float]]]) -> None:
         collection = self.client.collections.use(self.collection)
         for start in range(0, len(chunks), WRITE_BATCH_SIZE):
@@ -79,6 +82,7 @@ class WeaviateService:
             if result.has_errors:
                 raise RuntimeError(f"Weaviate PDF insert failed for {len(result.errors)} chunks")
 
+    # 문서 ID 또는 기존 파일명에 해당하는 청크를 제거합니다.
     async def delete_pdf(self, document_id: UUID, name: str, collection_name: str, legacy: bool) -> None:
         if not await self.client.collections.exists(collection_name):
             return
@@ -86,8 +90,6 @@ class WeaviateService:
         if not legacy:
             await self.delete_vectors(collection, Filter.by_property("pdfDocumentId").equal(document_id))
             return
-        # Older vectors have a filename but no document ID. Compare the entire name,
-        # since the existing text property's tokenization may match other filenames.
         properties = {prop.name for prop in (await collection.config.get()).properties}
         if "pdfFileName" not in properties:
             return
@@ -98,6 +100,7 @@ class WeaviateService:
         for start in range(0, len(ids), WRITE_BATCH_SIZE):
             await self.delete_vectors(collection, Filter.by_id().contains_any(ids[start:start + WRITE_BATCH_SIZE]))
 
+    # 삭제 조건과 일치하는 벡터를 모두 제거합니다.
     @staticmethod
     async def delete_vectors(collection, where) -> None:
         while True:
@@ -107,6 +110,7 @@ class WeaviateService:
             if result.matches == result.successful:
                 return
 
+    # 질문 벡터와 가까운 청크를 공통 형식으로 반환합니다.
     async def search(self, vector: list[float], limit: int) -> list[RetrievedChunk]:
         collection = self.client.collections.use(self.collection)
         response = await collection.query.near_vector(

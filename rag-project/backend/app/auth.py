@@ -20,12 +20,14 @@ class Credentials(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+# 비밀번호를 저장할 scrypt 해시를 생성합니다.
 def password_hash(password: str, salt: bytes | None = None) -> str:
     salt = salt if salt is not None else secrets.token_bytes(16)
     digest = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1)
     return f"{salt.hex()}:{digest.hex()}"
 
 
+# 설정된 웹 관리자 계정을 최초 실행 시 생성합니다.
 async def bootstrap_admin(pool: asyncpg.Pool, settings: Settings) -> None:
     if not settings.admin_password:
         return
@@ -46,10 +48,12 @@ async def bootstrap_admin(pool: asyncpg.Pool, settings: Settings) -> None:
         )
 
 
+# 세션 토큰의 SHA-256 해시를 반환합니다.
 def token_hash(token: str) -> bytes:
     return hashlib.sha256(token.encode()).digest()
 
 
+# 세션 쿠키를 검증하고 로그인한 사용자를 조회합니다.
 async def current_user(request: Request):
     token = request.cookies.get(COOKIE)
     if token:
@@ -66,6 +70,7 @@ async def current_user(request: Request):
 User = Annotated[asyncpg.Record, Depends(current_user)]
 
 
+# 로그인한 사용자의 관리자 권한을 확인합니다.
 async def admin_only(user: User):
     if user["role"] != "admin":
         raise HTTPException(403, "관리자 계정이 필요합니다.")
@@ -75,6 +80,7 @@ async def admin_only(user: User):
 Admin = Annotated[asyncpg.Record, Depends(admin_only)]
 
 
+# 로그인 세션을 등록하고 브라우저에 쿠키를 발급합니다.
 async def open_session(request: Request, response: Response, user: asyncpg.Record):
     token = secrets.token_urlsafe(32)
     async with request.app.state.db.acquire() as connection, connection.transaction():
@@ -93,6 +99,7 @@ async def open_session(request: Request, response: Response, user: asyncpg.Recor
     return {"username": user["username"], "role": user["role"]}
 
 
+# 일반 사용자 계정을 만들고 로그인합니다.
 @router.post("/register", status_code=201)
 async def register(body: Credentials, request: Request, response: Response):
     username = body.username.lower()
@@ -111,6 +118,7 @@ async def register(body: Credentials, request: Request, response: Response):
     return await open_session(request, response, user)
 
 
+# 아이디와 비밀번호를 검증하고 로그인합니다.
 @router.post("/login")
 async def login(body: Credentials, request: Request, response: Response):
     user = await request.app.state.db.fetchrow(
@@ -123,11 +131,13 @@ async def login(body: Credentials, request: Request, response: Response):
     return await open_session(request, response, user)
 
 
+# 현재 로그인한 계정의 공개 정보를 반환합니다.
 @router.get("/me")
 async def me(user: User):
     return {"username": user["username"], "role": user["role"]}
 
 
+# 현재 로그인 세션과 쿠키를 제거합니다.
 @router.post("/logout", status_code=204)
 async def logout(request: Request, response: Response):
     token = request.cookies.get(COOKIE)

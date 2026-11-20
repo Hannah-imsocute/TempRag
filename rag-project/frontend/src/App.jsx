@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, GraduationCap, Menu } from 'lucide-react';
+import { ArrowUpRight, Award, CalendarDays, GraduationCap, PanelLeftOpen } from 'lucide-react';
 import AuthForm from './components/AuthForm';
 import Sidebar from './components/Sidebar';
 import Composer from './components/Composer';
@@ -9,11 +9,12 @@ import { streamChat } from './api/chat';
 import { requestJson } from './api/request';
 
 const EXAMPLES = [
-  '졸업에 필요한 학점은 몇 학점인가요?',
-  '휴학 신청은 어떻게 하나요?',
-  '장학금 지급 기준이 궁금해요.',
+  { question: '졸업에 필요한 학점은 몇 학점인가요?', icon: GraduationCap },
+  { question: '휴학 신청은 어떻게 하나요?', icon: CalendarDays },
+  { question: '장학금 지급 기준이 궁금해요.', icon: Award },
 ];
 
+// 로그인 상태에 따라 인증 화면 또는 작업공간을 표시합니다.
 export default function App() {
   const [user, setUser] = useState(undefined);
   const [error, setError] = useState('');
@@ -31,11 +32,12 @@ export default function App() {
     return () => controller.abort();
   }, []);
 
-  if (user === undefined) return <main className="auth-page" role="status">로그인 상태를 확인하는 중입니다.</main>;
-  if (!user) return <>{error && <p className="app-alert form-error" role="alert">{error}</p>}<AuthForm onLogin={(account) => { setError(''); setUser(account); }} /></>;
+  if (user === undefined) return <main className="auth-page auth-loading" role="status">로그인 상태를 확인하는 중입니다.</main>;
+  if (!user) return <AuthForm sessionError={error} onLogin={(account) => { setError(''); setUser(account); }} />;
   return <Workspace user={user} onLogout={() => setUser(null)} />;
 }
 
+// 채팅과 관리자 자료 관리 화면의 상태를 관리합니다.
 function Workspace({ user, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 700);
   const [view, setView] = useState('chat');
@@ -50,6 +52,7 @@ function Workspace({ user, onLogout }) {
   const controllerRef = useRef(null);
   const selectionRef = useRef(null);
 
+  // 현재 사용자의 대화 목록을 새로 불러옵니다.
   function refreshHistory(signal) {
     return requestJson('/api/chat/conversations', { signal }).then(setConversations).catch((problem) => {
       if (!signal?.aborted) setError(problem.message);
@@ -66,10 +69,12 @@ function Workspace({ user, onLogout }) {
     };
   }, []);
 
+  // 모바일에서 메뉴 항목을 선택하면 사이드바를 닫습니다.
   function closeOnMobile() {
     if (window.innerWidth < 700) setSidebarOpen(false);
   }
 
+  // 진행 중인 요청을 중지하고 채팅 화면을 초기화합니다.
   function resetChat() {
     controllerRef.current?.abort();
     controllerRef.current = null;
@@ -84,12 +89,14 @@ function Workspace({ user, onLogout }) {
     setIsStreaming(false);
   }
 
+  // 빈 대화로 이동합니다.
   function newChat() {
     resetChat();
     setView('chat');
     closeOnMobile();
   }
 
+  // 선택한 대화의 저장된 메시지를 불러옵니다.
   async function selectConversation(id) {
     if (id === selectedId && view === 'chat') return closeOnMobile();
     resetChat();
@@ -114,6 +121,7 @@ function Workspace({ user, onLogout }) {
     }
   }
 
+  // 서버 세션을 종료하고 로그인 화면으로 이동합니다.
   async function logout() {
     try {
       await requestJson('/api/auth/logout', { method: 'POST' });
@@ -123,6 +131,7 @@ function Workspace({ user, onLogout }) {
     }
   }
 
+  // 질문을 전송하고 수신한 답변과 출처를 표시합니다.
   async function sendQuestion(text) {
     const question = text.trim();
     if (!question || controllerRef.current || loading) return;
@@ -179,7 +188,9 @@ function Workspace({ user, onLogout }) {
     }
   }
 
-  const composer = <Composer value={draft} onChange={setDraft} onSubmit={sendQuestion} isStreaming={isStreaming} onStop={() => controllerRef.current?.abort()} />;
+  const hasMessages = messages.length > 0;
+  const chatTitle = conversations.find((chat) => chat.id === selectedId)?.title || '새 채팅';
+  const title = view === 'documents' ? '관리자' : chatTitle;
 
   return (
     <div className="app-shell">
@@ -188,37 +199,48 @@ function Workspace({ user, onLogout }) {
         onDocuments={() => { setView('documents'); closeOnMobile(); }} view={view} onLogout={logout} />
       <main className="main-panel">
         <header className="topbar">
-          <div className="topbar-left">
-            {!sidebarOpen && <button className="icon-button" onClick={() => setSidebarOpen(true)} aria-label="사이드바 열기"><Menu size={21} /></button>}
-            <span className="model-title">{view === 'documents' ? '관리자' : '학교 규정 GPT'}</span>
-          </div>
-          {view === 'chat' && <div className="topbar-right"><BookOpen size={19} /><span>학칙 기반 답변</span></div>}
+          {!sidebarOpen && (
+            <button className="icon-button" onClick={() => setSidebarOpen(true)} aria-controls="workspace-sidebar" aria-expanded={false} aria-label="사이드바 열기" title="사이드바 열기">
+              <PanelLeftOpen size={20} />
+            </button>
+          )}
+          <span className="view-title" title={title}>{title}</span>
         </header>
         {error && <p className="app-alert form-error" role="alert">{error}</p>}
         {view === 'documents' ? <Documents /> : loading ? (
-          <p className="app-alert muted" role="status">대화를 불러오는 중입니다.</p>
-        ) : messages.length === 0 ? (
-          <div className="welcome-area">
-            <div className="welcome-content">
-              <div className="welcome-symbol"><GraduationCap size={29} strokeWidth={1.6} /></div>
-              <h1>학교 규정에 대해 무엇이든 물어보세요</h1>
-              <p>학교 규정 문서를 검색해 근거와 함께 답변합니다.</p>
-              {composer}
-              <div className="example-list">
-                {EXAMPLES.map((question) => <button className="example-button" disabled={isStreaming} onClick={() => sendQuestion(question)} key={question}>{question}</button>)}
-              </div>
-            </div>
-          </div>
+          <p className="chat-loading muted" role="status">대화를 불러오는 중입니다.</p>
         ) : (
-          <>
-            <MessageList messages={messages} status={status} />
-            <div className="bottom-composer">
+          <section className={`chat-panel ${hasMessages ? 'chat-active' : 'chat-welcome'}`} aria-label="학교 규정 채팅">
+            <div className="chat-body">
+              {hasMessages ? <MessageList messages={messages} status={status} /> : (
+                <div className="welcome-content">
+                  <div className="welcome-symbol" aria-hidden="true"><GraduationCap size={32} strokeWidth={1.65} /></div>
+                  <h1><span>학교 규정</span>이 궁금하신가요?</h1>
+                  <p>학칙과 학교 규정을 검색해 출처와 함께 답변합니다.</p>
+                </div>
+              )}
+            </div>
+            <div className="composer-region">
               <div className="composer-width">
-                {composer}
-                <div className="disclaimer">중요한 학사 결정은 학교 공지와 담당 부서에서 확인하세요.</div>
+                <Composer value={draft} onChange={setDraft} onSubmit={sendQuestion} isStreaming={isStreaming}
+                  onStop={() => controllerRef.current?.abort()} />
+                {hasMessages ? (
+                  <p className="disclaimer">중요한 학사 결정은 학교 공지와 담당 부서에서 확인하세요.</p>
+                ) : (
+                  <div className="example-list" role="group" aria-label="예시 질문">
+                    {EXAMPLES.map(({ question, icon: Icon }) => (
+                      <button type="button" className="example-button" disabled={isStreaming}
+                        onClick={() => sendQuestion(question)} key={question}>
+                        <span className="example-icon"><Icon size={19} strokeWidth={1.75} /></span>
+                        <span>{question}</span>
+                        <ArrowUpRight className="example-arrow" size={15} aria-hidden="true" />
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
-          </>
+          </section>
         )}
       </main>
     </div>

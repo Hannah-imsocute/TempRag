@@ -1,8 +1,8 @@
-"""실행 환경(.env -> Docker 환경 변수)만 모아 관리합니다."""
 from dataclasses import dataclass, field
 import os
 
 
+# 환경 변수 또는 기본값을 읽습니다.
 def env(name: str, default: str) -> str:
     return os.getenv(name, default)
 
@@ -29,6 +29,7 @@ class Settings:
     search_top_k: int = field(default_factory=lambda: int(env("SEARCH_TOP_K", "4")))
     max_context_chars: int = field(default_factory=lambda: int(env("MAX_CONTEXT_CHARS", "10000")))
 
+    # 검색 개수와 문맥 길이 설정을 검증합니다.
     def __post_init__(self):
         if self.search_top_k < 1 or self.search_top_k > 20:
             raise ValueError("SEARCH_TOP_K는 1~20이어야 합니다.")

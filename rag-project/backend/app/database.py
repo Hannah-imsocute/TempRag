@@ -50,15 +50,16 @@ CREATE TABLE IF NOT EXISTS pdf_documents (
 """
 
 
+# PostgreSQL 테이블과 인덱스를 초기화합니다.
 async def initialize(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as connection, connection.transaction():
         await connection.execute("SELECT pg_advisory_xact_lock(81347601)")
         await connection.execute(SCHEMA)
 
 
+# 같은 대화나 문서를 수정하는 요청을 직렬화합니다.
 @asynccontextmanager
 async def operation(pool: asyncpg.Pool, key: str):
-    """Serialize requests that update the same document or conversation."""
     async with pool.acquire() as connection:
         acquired = await connection.fetchval("SELECT pg_try_advisory_lock(hashtextextended($1, 0))", key)
         try:

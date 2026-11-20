@@ -1,4 +1,3 @@
-"""Ollama HTTP API와 통신합니다. 임베딩은 JSON, 생성은 NDJSON 스트림입니다."""
 import json
 from collections.abc import AsyncIterator
 
@@ -10,14 +9,17 @@ class EmbeddingError(RuntimeError):
 
 
 class OllamaService:
+    # 공용 HTTP 클라이언트와 Ollama 모델 설정을 보관합니다.
     def __init__(self, http: httpx.AsyncClient, embedding_model: str, llm_model: str):
         self.http = http
         self.embedding_model = embedding_model
         self.llm_model = llm_model
 
+    # 텍스트 하나의 임베딩 벡터를 반환합니다.
     async def embed(self, text: str) -> list[float]:
         return (await self.embed_many([text]))[0]
 
+    # 텍스트 묶음의 임베딩 벡터를 순서대로 반환합니다.
     async def embed_many(self, texts: list[str]) -> list[list[float]]:
         try:
             response = await self.http.post(
@@ -37,6 +39,7 @@ class OllamaService:
             raise EmbeddingError("Ollama가 요청한 청크에 맞는 임베딩을 반환하지 않았습니다.")
         return vectors
 
+    # 검색 근거와 대화 이력을 사용해 답변 조각을 생성합니다.
     async def stream_answer(self, question: str, context: str, history: list[dict[str, str]]) -> AsyncIterator[str]:
         messages = [
             {
@@ -54,7 +57,6 @@ class OllamaService:
                 "content": f"<참고자료>\n{context}\n</참고자료>\n\n<질문>\n{question}\n</질문>",
             },
         ]
-        # stream=True: Ollama가 생성한 토큰/청크를 완성 전에 전달합니다.
         async with self.http.stream(
             "POST",
             "/api/chat",

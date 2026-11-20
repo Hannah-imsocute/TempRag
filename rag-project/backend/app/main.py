@@ -16,16 +16,15 @@ from app.services.rag_service import RagService
 settings = Settings()
 
 
+# 앱 시작과 종료 시 공용 연결과 서비스를 관리합니다.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 외부 DB 드라이버는 서버가 시작할 때 로딩됩니다. API 테스트에서는 실제 DB 연결이 필요 없습니다.
     import weaviate
     from weaviate.classes.config import Configure, DataType, Property
     from weaviate.classes.init import AdditionalConfig, Timeout
     from weaviate.exceptions import UnexpectedStatusCodeError
     from app.services.weaviate_service import WeaviateService
 
-    # 요청마다 클라이언트를 재연결하지 않고 애플리케이션 수명 동안 재사용합니다.
     async with asyncpg.create_pool(
         host=settings.postgres_host, port=settings.postgres_port, user=settings.postgres_user,
         password=settings.postgres_password, database=settings.postgres_db, min_size=1, max_size=20, command_timeout=15,
@@ -81,6 +80,7 @@ app.include_router(chats.router)
 app.include_router(documents.router)
 
 
+# API 요청의 출처와 응답 캐시 정책을 처리합니다.
 @app.middleware("http")
 async def protect_api(request: Request, call_next):
     if not request.url.path.startswith("/api/"):
@@ -102,6 +102,7 @@ if assets_dir.is_dir():
     app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
 
+# 빌드된 프런트엔드 진입 페이지를 반환합니다.
 @app.get("/", include_in_schema=False)
 def index():
     index_file = static_dir / "index.html"
@@ -110,7 +111,7 @@ def index():
     return FileResponse(index_file)
 
 
+# FastAPI가 요청에 응답할 수 있는지 확인합니다.
 @app.get("/api/health")
 async def health():
-    # 이 API는 FastAPI 프로세스 응답 여부만 확인합니다(외부 AI 서비스의 상태 검사는 아님).
     return {"status": "ok"}
